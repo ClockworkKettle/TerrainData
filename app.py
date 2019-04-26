@@ -1,9 +1,10 @@
 from tkinter import filedialog
 from tkinter import *
+import tkinter as tk
 from osgeo import gdal
 from osgeo import gdal_array
 import gdal
-from osgeo import gdal, gdalnumeric, ogr, osr
+#from osgeo import gdal, gdalnumeric, ogr, osr
 from arsf_envi_reader import envi_header
 from PIL import Image
 from PIL import ImageDraw
@@ -12,13 +13,10 @@ import operator
 import os
 import subprocess
 import sys
+import json
+
 gdal.UseExceptions()
 gdal.SetConfigOption('GDAL_ARRAY_OPEN_BY_FILENAME', 'TRUE')
-
-def show_entry_fields():
-    entryfields = "Path to DSM: " + e1.get() + "\nPath to AOI: " + e2.get() + "\nOutput: " + e3.get()
-    return entryfields
-
 
 # This function will convert the rasterized clipper shapefile
 # to a mask for use within GDAL.
@@ -122,9 +120,11 @@ def clip( shapefile_path, raster_path ):
 
     # Convert the layer extent to image pixel coordinates
     minX, maxX, minY, maxY = lyr.GetExtent()
+
     ulX, ulY = world2Pixel(geoTrans, minX, maxY)
     lrX, lrY = world2Pixel(geoTrans, maxX, minY)
-
+    print("ulx: ", ulX, "\tulY: ", ulY, "\tlrx: ", lrX, "\tlry: ", lrY)
+    print("minX: ", minX, "\tmaxX: ", maxX, "\tminY: ", minY, "\tmaxY: ", maxY)
     # Calculate the pixel size of the new image
     pxWidth = int(lrX - ulX)
     pxHeight = int(lrY - ulY)
@@ -160,12 +160,7 @@ def clip( shapefile_path, raster_path ):
     mask = imageToArray(rasterPoly)
     # Clip the image using the mask
     clip = gdalnumeric.choose(mask, \
-        (clip, 0)).astype(gdalnumeric.uint8)
-
-    # This image has 3 bands so we stretch each one to make them
-    # visually brighter
-    for i in range(3):
-      clip[:,:] = stretch(clip[:,:])
+        (clip, 0))
 
     # Save new tiff
     #
@@ -174,17 +169,11 @@ def clip( shapefile_path, raster_path ):
     #  we can overwrite the offset of the destination
     #  raster
     #
-    ### the old way using SaveArray
-    #
-    # gdalnumeric.SaveArray(clip, "OUTPUT.tif", format="GTiff", prototype=raster_path)
-    #
-    ###
-    #
     gtiffDriver = gdal.GetDriverByName( 'GTiff' )
     if gtiffDriver is None:
         raise ValueError("Can't find GeoTiff Driver")
     output_path = ""
-    output_path = e3.get() + "/OUTPUT.tif"
+    output_path = app.e3.get() + "/OUTPUT.tif"
     gtiffDriver.CreateCopy( output_path,
         OpenArray( clip, prototype_ds=raster_path, xoff=xoffset, yoff=yoffset )
     )
@@ -192,84 +181,150 @@ def clip( shapefile_path, raster_path ):
     # Save as an 8-bit jpeg for an easy, quick preview
     clip = clip.astype(gdalnumeric.uint8)
     output_path = ""
-    output_path = e3.get() + "/OUTPUT.jpg"
+    output_path = app.e3.get() + "/OUTPUT.jpg"
     gdalnumeric.SaveArray(clip, output_path, format="JPEG")
     exportBIL()
     gdal.ErrorReset()
-
-
-def entry1():
-    targetfile = getpath("D:/'PlacementProjects/TerrainData/mygeodata")
-    e1.insert(0, targetfile)
-
-
-def entry2():
-    targetfile = getpath("D:/'PlacementProjects/TerrainData/DSM/Ireland_DSM")
-    e2.insert(0, targetfile)
-    #shpArr = imagetoarray(i)
-
-
-def entry3():
-    targetfile = getOutputPath("D:/'PlacementProjects/TerrainData/mygeodata")
-    e3.insert(0, targetfile)
-
-
-
-def getpath(dir):
-    window.filename = filedialog.askopenfilename(initialdir=dir, title="Select file")
-    return window.filename
-
-
-def getOutputPath(dir):
-    window.directory = filedialog.askdirectory(initialdir=dir, title="Select Output Directory")
-    return window.directory
-
 
 def loadgeotiff(path):
     gtif = gdal.Open(path)
     return gtif
 
-
-def generateoutput():
-    clip(e1.get(), e2.get())
-
-
 def exportBIL():
-        subprocess.run(["D:/PlacementProjects/TerrainData/GDAL_GeoTIFF_2_BIL.bat", "D:/PlacementProjects/TerrainData/output/OUTPUT.tif", "D:/PlacementProjects/TerrainData/output/OUTPUT.bil"])
+        subprocess.run(["GDAL_GeoTIFF_2_BIL.bat", "OUTPUT/OUTPUT.tif", "OUTPUT/OUTPUT.bil"])
 
 
+class mainWindow:
+    def __init__(self, master):
+
+        self.master = master
+        self.master.title("DSM Converter")
+        self.frame = tk.Frame(self.master)
+        #
+        Label(self.frame, text="Shapefile/Kml").grid(row=0, column=1)
+        self.e1 = Entry(self.frame, width=60)
+        self.e1.grid(row=0, column=2, pady=(50,50))
+        self.e1.insert(0, conf.getConfigKeyValue('e1'))
+
+        self.b1 = Button(self.frame, text="...", command=self.entry1Button).grid(row=0, column=3, padx=(0, 30))
+        self.b2 = Button(self.frame, text="Settings", command=self.settings_window).grid (row=3, column=3, padx=(0,30))
+        #
+        Button(self.frame, text='Quit', command=self.frame.quit).grid(row=3, column=0, sticky=W, pady=4, padx=(20,0))
+        Button(self.frame, text='Generate Output', command=self.generateOutput_button).grid(row=3, column=1, sticky=W, pady=4)
+
+        self.frame.pack()
+        print("Initialize Main Window Complete")
+
+    def settings_window(self):
+        self.newWindow = tk.Toplevel(self.master)
+        self.app=settingsWindow(self.newWindow)
+
+    def entry1Button(self):
+        targetfile = self.getFilePath()
+        self.e1.delete(0,'end')
+        self.e1.insert(0, targetfile)
+        conf.writeConfigData('e1', targetfile)
+
+    def generateOutput_button(self):
+        clip(self.e1.get(), self.e2.get())
+
+    def getFilePath(self):
+        self.filename = filedialog.askopenfilename(initialdir="", title="Select file")
+        return self.filename
+
+    def getFolderPath(self):
+        self.directory = filedialog.askdirectory(initialdir="", title="Select Output Directory")
+        return self.directory
 
 
+class settingsWindow:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("Settings")
+        self.frame = tk.Frame(self.master)
+        self.frame.grab_set()
 
-window = Tk()
-window.title("Terrain Generator")
-# Column Position
-cp = 1
+        Label(self.frame, text="DSM").grid(row=0, column=1)
+        Label(self.frame, text="Output Path").grid(row=1, column=1)
 
-#
-Label(window, text="Shapefile").grid(row=0, column=cp)
-Label(window, text="DSM").grid(row=1, column=cp)
-Label(window, text="Output Path").grid(row=2, column=cp)
+        self.e2 = Entry(self.frame, width=60)
+        self.e3 = Entry(self.frame, width=60)
 
-#
-e1 = Entry(window, width=60)
-e2 = Entry(window, width=60)
-e3 = Entry(window, width=60)
+        self.e2.grid(row=0, column=2)
+        self.e3.grid(row=1, column=2)
 
-cp += 1
+        self.e2.insert(0, conf.getConfigKeyValue('e2'))
+        self.e3.insert(0, conf.getConfigKeyValue('e3'))
 
-#
-e1.grid(row=0, column=cp)
-e2.grid(row=1, column=cp)
-e3.grid(row=2, column=cp)
+        self.b2 = Button(self.frame, text="...", command=self.entry2Button).grid(row=0, column=3, padx=(0, 30))
+        self.b3 = Button(self.frame, text="...", command=self.entry3Button).grid(row=1, column=3, padx=(0, 30))
 
-#
-b1 = Button(window, text="...", command=entry1).grid(row=0, column=3, padx=(0, 30))
-b2 = Button(window, text="...", command=entry2).grid(row=1, column=3, padx=(0, 30))
-b3 = Button(window, text="...", command=entry3).grid(row=2, column=3, padx=(0, 30))
+        self.sb2 = Button (self.frame, text="Reset Config", command=conf.reinit_config).grid(row=3, column=2)
 
-#
-Button(window, text='Quit', command=window.quit).grid(row=3, column=0, sticky=W, pady=4)
-Button(window, text='Generate Output', command=generateoutput).grid(row=3, column=1, sticky=W, pady=4)
+        self.sbExit = Button(self.frame, text="ok", command=self.settingsExit).grid(row=4, column=3, padx=(20,20), pady=(0,10) )
+        self.frame.pack()
+        print("Initialization complete")
 
-mainloop()
+    def entry2Button(self):
+        targetfile = self.getFilePath()
+        self.e2.delete(0,'end')
+        self.e2.insert(0, targetfile)
+        conf.writeConfigData('e2', targetfile)
+
+    def entry3Button(self):
+        targetfile = self.getFolderPath()
+        self.e3.delete(0,'end')
+        self.e3.insert(0, targetfile)
+        conf.writeConfigData('e3', targetfile)
+
+    def settingsExit(self):
+        self.master.destroy()
+        print("settings quit")
+
+
+class config:
+    def __init__(self):
+        file_path = 'config.json'
+        try:
+            with open(file_path) as json_file:
+                data = json.load(json_file)
+        except IOError:
+            # If there is no config ile, create one
+            data = open(file_path, 'w+')
+            data.write('{\n\t"e1":"",\n\t"e2":"",\n\t"e3":"",\n\t"gdal":""\n}')
+            with open(file_path) as json_file:
+                data = json.load(json_file)
+
+        self.configdata = data
+
+    def getConfigData(self):
+        return self.configdata
+
+    def getConfigKeyValue(self, key):
+        return self.configdata[key]
+
+    def writeConfigData(self,key,value):
+        self.configdata[key] = value
+        with open("config.json", "w") as write_file:
+            json.dump(self.configdata, write_file)
+        print(self.configdata)
+
+    def reinit_config(self):
+        file_path = 'config.json'
+        data = open(file_path, 'w+')
+        data.write('{\n\t"e1":"",\n\t"e2":"",\n\t"e3":"",\n\t"gdal":""\n}')
+        #with open(file_path) as json_file:
+        #    data = json.load(json_file)
+        #self.configdata = data
+
+
+def main():
+    global conf
+    conf = config()
+    root = tk.Tk()
+    global app
+    app = mainWindow(root)
+    root.mainloop()
+
+if __name__ == '__main__':
+    main()
